@@ -1,0 +1,25 @@
+# Fichiers de build temporaires
+build/*.ptau
+build/*.zkey
+build/pot*
+
+# Preuves et témoins temporaires
+proofs/*.json
+inputs/*.json
+outputs/*.json
+witness.wtns
+
+# Logs
+*.log
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Garder la structure
+!proofs/.gitkeep
+!inputs/.gitkeep
+!outputs/.gitkeep
+
+# Ne PAS ignorer les clés finales
+!keys/
