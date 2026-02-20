@@ -287,12 +287,9 @@ app.post("/zkp/generate-proof", async (req, res) => {
 
 app.post("/zkp/verify", async (req, res) => {
   try {
-    const { proof, publicSignals } = req.body;
+    const { proof, publicSignals, originalInputs } = req.body;
     
     console.log("\n🔍 Vérification ZKP...");
-    console.log("📥 Inputs reçus:");
-    console.log(`  - proof type: ${typeof proof}`);
-    console.log(`  - publicSignals type: ${typeof publicSignals}`);
 
     // ========================================
     // ÉTAPE 1 : Convertir publicSignals en tableau
@@ -302,65 +299,66 @@ app.post("/zkp/verify", async (req, res) => {
     if (Array.isArray(publicSignals)) {
       signals = publicSignals;
     } else if (typeof publicSignals === 'object' && publicSignals !== null) {
-      // Convertir objet {nullifier, merkleRoot, electionId} en tableau
       signals = [
         publicSignals.nullifier,
         publicSignals.merkleRoot,
         publicSignals.electionId
       ];
-      console.log("📤 publicSignals converti en tableau:", signals.map(s => s.slice(0, 20) + "..."));
+      
+      console.log("📊 PublicSignals reçus:");
+      console.log(`  - Nullifier: ${signals[0]?.slice(0, 20)}...`);
+      console.log(`  - MerkleRoot: ${signals[1]?.slice(0, 20)}...`);
+      console.log(`  - ElectionId: ${signals[2]?.slice(0, 20)}...`);
     } else {
       throw new Error("publicSignals doit être un tableau ou un objet");
     }
 
-    // Vérifier que signals est bien un tableau
-    if (!Array.isArray(signals)) {
-      throw new Error("Impossible de convertir publicSignals en tableau");
+    // ========================================
+    // ÉTAPE 2 : Vérifier la clé de vérification
+    // ========================================
+    if (!verificationKey) {
+      throw new Error("Clé de vérification non chargée");
     }
 
-    console.log(`  - Nullifier: ${signals[0]?.slice(0, 20)}...`);
-    console.log(`  - Merkle Root: ${signals[1]?.slice(0, 20)}...`);
-    console.log(`  - Election ID: ${signals[2]?.slice(0, 20)}...`);
+    console.log("🔑 Clé de vérification chargée:", !!verificationKey);
 
     // ========================================
-    // ÉTAPE 2 : Vérifier et formater la preuve
+    // ÉTAPE 3 : Formater la preuve
     // ========================================
-    
-    // La preuve doit avoir cette structure exacte pour snarkjs :
-    // {
-    //   pi_a: [string, string, string],
-    //   pi_b: [[string, string], [string, string], [string, string]],
-    //   pi_c: [string, string, string],
-    //   protocol: "groth16",
-    //   curve: "bn128"
-    // }
-
-    if (!proof || typeof proof !== 'object') {
-      throw new Error("Proof doit être un objet");
+    if (!proof.pi_b || !Array.isArray(proof.pi_b)) {
+      throw new Error("pi_b doit être un tableau");
     }
 
-    // Vérifier les champs obligatoires
-    if (!proof.pi_a || !proof.pi_b || !proof.pi_c) {
-      console.error("❌ Structure de preuve invalide:", JSON.stringify(proof).slice(0, 200));
-      throw new Error("Proof doit contenir pi_a, pi_b et pi_c");
+    const formattedPiB = proof.pi_b.map(item => {
+      if (Array.isArray(item)) {
+        return item;
+      }
+      if (item && typeof item === 'object') {
+        return [item.x || item[0], item.y || item[1]];
+      }
+      return item;
+    });
+
+    if (formattedPiB.length !== 3) {
+      throw new Error(`pi_b doit avoir 3 éléments, reçu: ${formattedPiB.length}`);
     }
 
-    // S'assurer que la preuve a le bon format
     const formattedProof = {
       pi_a: proof.pi_a,
-      pi_b: proof.pi_b,
+      pi_b: formattedPiB,
       pi_c: proof.pi_c,
       protocol: proof.protocol || "groth16",
       curve: proof.curve || "bn128"
     };
 
-    console.log("🔐 Preuve formatée:");
-    console.log(`  - pi_a length: ${formattedProof.pi_a?.length}`);
-    console.log(`  - pi_b length: ${formattedProof.pi_b?.length}`);
-    console.log(`  - pi_c length: ${formattedProof.pi_c?.length}`);
+    console.log("✅ Preuve formatée pour snarkjs:", {
+      pi_a_length: formattedProof.pi_a?.length,
+      pi_b_structure: formattedProof.pi_b?.map(arr => Array.isArray(arr) ? arr.length : 'non-array'),
+      pi_c_length: formattedProof.pi_c?.length
+    });
 
     // ========================================
-    // ÉTAPE 3 : Vérification avec snarkjs
+    // ÉTAPE 4 : Vérification avec snarkjs
     // ========================================
     console.log("⏳ Appel snarkjs.groth16.verify...");
     
@@ -372,22 +370,144 @@ app.post("/zkp/verify", async (req, res) => {
     
     console.log(valid ? "✅ Preuve valide" : "❌ Preuve invalide");
 
-    res.json({ success: true, valid });
+    // ========================================
+    // ÉTAPE 5 : Si invalide, essayer de comprendre pourquoi
+    // ========================================
+    if (!valid && originalInputs) {
+      console.log("\n🔍 Analyse de l'échec...");
+      
+      // Essayer de re-générer la preuve
+      try {
+        console.log("🔄 Tentative de re-génération...");
+        const { proof: newProof, publicSignals: newSignals } = await snarkjs.groth16.fullProve(
+          originalInputs,
+          PATHS.wasm,
+          PATHS.zkey
+        );
+        
+        console.log("✅ Preuve re-générée avec succès");
+        console.log(`  Nouveau nullifier: ${newSignals[0]?.slice(0, 20)}...`);
+        console.log(`  Ancien nullifier: ${signals[0]?.slice(0, 20)}...`);
+        
+        // Vérifier si les nullifiers correspondent
+        const nullifiersMatch = signals[0] === newSignals[0];
+        console.log(`  Nullifiers match: ${nullifiersMatch ? '✅' : '❌'}`);
+        
+        if (!nullifiersMatch) {
+          console.log("⚠️ Les nullifiers ne correspondent pas - inputs différents?");
+        }
+        
+      } catch (regenError) {
+        console.error("❌ Impossible de re-générer:", regenError.message);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      valid: valid,
+      details: {
+        verification_key_loaded: !!verificationKey,
+        signals_count: signals.length,
+        proof_format_ok: true
+      }
+    });
     
   } catch (err) {
     console.error("❌ Verify error:", err.message);
     console.error("Stack:", err.stack);
     
-    // Logs détaillés pour debug
-    console.error("\n🔍 Debug info:");
-    console.error("  - verificationKey présente:", !!verificationKey);
-    console.error("  - Proof reçu:", JSON.stringify(req.body.proof).slice(0, 300));
-    console.error("  - PublicSignals reçu:", JSON.stringify(req.body.publicSignals).slice(0, 200));
-    
     res.status(500).json({ 
       success: false, 
+      message: "Structure de preuve ZKP invalide",
+      error_type: "zkp_verification_failed",
       error: err.message,
       details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+app.post("/zkp/test-circuit", async (req, res) => {
+  try {
+    const { voterNationalId, voterSecret, leaves, electionId } = req.body;
+
+    console.log("\n🧪 Test complet du circuit ZKP...");
+
+    // 1. Créer l'arbre Merkle
+    const tree = new MerkleTree(leaves);
+    const voterLeaf = BigInt(voterNationalId);
+    const index = tree.leaves.findIndex((leaf) => leaf === voterLeaf);
+    
+    if (index === -1) {
+      return res.json({
+        success: false,
+        error: "Voter not found in leaves"
+      });
+    }
+
+    const proofPath = tree.getProof(index);
+    const merkleRoot = tree.getRoot();
+    const voterSecretField = hashToPoseidonField(voterSecret);
+    const electionField = hashToPoseidonField(electionId);
+
+    const inputs = {
+      voterNationalId: voterLeaf.toString(),
+      voterSecret: voterSecretField,
+      merkleRoot: merkleRoot,
+      merklePathElements: proofPath.pathElements,
+      merklePathIndices: proofPath.pathIndices,
+      electionId: electionField,
+    };
+
+    console.log("📥 Inputs pour le circuit:");
+    console.log(`  - voterNationalId: ${inputs.voterNationalId.slice(0, 20)}...`);
+    console.log(`  - merkleRoot: ${inputs.merkleRoot.slice(0, 20)}...`);
+    console.log(`  - electionId: ${inputs.electionId.slice(0, 20)}...`);
+
+    // 2. Générer la preuve
+    console.log("⏳ Génération de la preuve...");
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+      inputs,
+      PATHS.wasm,
+      PATHS.zkey
+    );
+
+    console.log("✅ Preuve générée");
+    console.log(`  - Nullifier: ${publicSignals[0].slice(0, 20)}...`);
+    console.log(`  - MerkleRoot: ${publicSignals[1].slice(0, 20)}...`);
+    console.log(`  - ElectionId: ${publicSignals[2].slice(0, 20)}...`);
+
+    // 3. Vérifier la preuve
+    console.log("⏳ Vérification de la preuve...");
+    const valid = await snarkjs.groth16.verify(
+      verificationKey,
+      publicSignals,
+      proof
+    );
+
+    console.log(valid ? "✅ Preuve valide" : "❌ Preuve invalide");
+
+    res.json({
+      success: true,
+      valid: valid,
+      proof_generated: true,
+      verification_successful: valid,
+      data: {
+        nullifier: publicSignals[0],
+        merkleRoot: publicSignals[1],
+        electionId: publicSignals[2],
+        proof_structure: {
+          has_pi_a: !!proof.pi_a,
+          has_pi_b: !!proof.pi_b,
+          has_pi_c: !!proof.pi_c
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error("❌ Test circuit error:", err.message);
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 });

@@ -1,0 +1,30 @@
+{
+  "rpcUrl": "http://localhost:8545",
+  "contractAddress": "0x3484B20600854091C166C062FacAd700123f5f71",
+  "tests": {
+    "small": {
+      "registerTokens": 5,
+      "castVotes": 5,
+      "verifyVotes": 5,
+      "queryVotes": 5
+    },
+    "medium": {
+      "registerTokens": 20,
+      "castVotes": 20,
+      "verifyVotes": 20,
+      "queryVotes": 10
+    },
+    "large": {
+      "registerTokens": 100,
+      "castVotes": 100,
+      "verifyVotes": 100,
+      "queryVotes": 50
+    }
+  },
+  "gasLimit": {
+    "register": 500000,
+    "vote": 2000000,
+    "verify": 300000,
+    "query": 100000
+  }
+}
